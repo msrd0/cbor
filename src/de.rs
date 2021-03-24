@@ -326,7 +326,7 @@ where
             EitherLifetime::Short(buf) => visitor.visit_bytes(buf),
         }
     }
-    
+
     fn convert_str<'a>(buf: &'a [u8], buf_end_offset: u64) -> Result<&'a str> {
         match str::from_utf8(buf) {
             Ok(s) => Ok(s),
@@ -801,6 +801,23 @@ impl ParsedValue {
     }
 }
 
+macro_rules! forward_to_parse_primitive {
+    ($($func:ident)*) => {
+        paste::paste! { $(
+            fn [< deserialize_ $func >]<V>(self, visitor: V) -> Result<V::Value>
+            where
+                V: de::Visitor<'de>,
+            {
+                let v = self.parse_primitive()?;
+                if let ParsedValue::Other { .. } = v {
+                    return Err(Error::message("Unsuitable type found in cbor input"));
+                }
+                v.visit(visitor)
+            }
+        )* }
+    };
+}
+
 impl<'de, 'a, R> de::Deserializer<'de> for &'a mut Deserializer<R>
 where
     R: Read<'de>,
@@ -905,8 +922,11 @@ where
         false
     }
 
+    forward_to_parse_primitive! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 unit
+    }
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string unit
+        char str string
         unit_struct seq tuple tuple_struct map struct identifier ignored_any
         bytes byte_buf
     }

@@ -18,6 +18,7 @@ maintenance = { status = "passively-maintained" }
 
 [dependencies]
 half = "1.2.0"
+paste = "1.0"
 serde = { version = "1.0.14", default-features = false }
 
 [dev-dependencies]
