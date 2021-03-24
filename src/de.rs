@@ -326,7 +326,7 @@ where
             EitherLifetime::Short(buf) => visitor.visit_bytes(buf),
         }
     }
-
+    
     fn convert_str<'a>(buf: &'a [u8], buf_end_offset: u64) -> Result<&'a str> {
         match str::from_utf8(buf) {
             Ok(s) => Ok(s),
@@ -419,7 +419,7 @@ where
     where
         V: de::Visitor<'de>,
     {
-        self.recursion_checked(|de| de.parse_value(visitor))
+        self.recursion_checked(|d| d.parse_value(visitor))
     }
 
     fn recursion_checked<F, T>(&mut self, f: F) -> Result<T>
@@ -576,200 +576,227 @@ where
         self.parse_u64().map(|i| f64::from_bits(i))
     }
 
-    // Don't warn about the `unreachable!` in case
-    // exhaustive integer pattern matching is enabled.
-    #[allow(unreachable_patterns)]
-    fn parse_value<V>(&mut self, visitor: V) -> Result<V::Value>
-    where
-        V: de::Visitor<'de>,
-    {
+    fn parse_primitive(&mut self) -> Result<ParsedValue> {
         let byte = self.parse_u8()?;
-        match byte {
+        Ok(match byte {
             // Major type 0: an unsigned integer
-            0x00..=0x17 => visitor.visit_u8(byte),
-            0x18 => {
-                let value = self.parse_u8()?;
-                visitor.visit_u8(value)
-            }
-            0x19 => {
-                let value = self.parse_u16()?;
-                visitor.visit_u16(value)
-            }
-            0x1a => {
-                let value = self.parse_u32()?;
-                visitor.visit_u32(value)
-            }
-            0x1b => {
-                let value = self.parse_u64()?;
-                visitor.visit_u64(value)
-            }
-            0x1c..=0x1f => Err(self.error(ErrorCode::UnassignedCode)),
+            0x00..=0x17 => ParsedValue::U8(byte),
+            0x18 => ParsedValue::U8(self.parse_u8()?),
+            0x19 => ParsedValue::U16(self.parse_u16()?),
+            0x1a => ParsedValue::U32(self.parse_u32()?),
+            0x1b => ParsedValue::U64(self.parse_u64()?),
 
             // Major type 1: a negative integer
-            0x20..=0x37 => visitor.visit_i8(-1 - (byte - 0x20) as i8),
+            0x20..=0x37 => ParsedValue::I8(-1 - (byte - 0x20) as i8),
             0x38 => {
                 let value = self.parse_u8()?;
-                visitor.visit_i16(-1 - i16::from(value))
+                ParsedValue::I16(-1 - i16::from(value))
             }
             0x39 => {
                 let value = self.parse_u16()?;
-                visitor.visit_i32(-1 - i32::from(value))
+                ParsedValue::I32(-1 - i32::from(value))
             }
             0x3a => {
                 let value = self.parse_u32()?;
-                visitor.visit_i64(-1 - i64::from(value))
+                ParsedValue::I64(-1 - i64::from(value))
             }
             0x3b => {
                 let value = self.parse_u64()?;
                 if value > i64::max_value() as u64 {
-                    return visitor.visit_i128(-1 - i128::from(value));
+                    ParsedValue::I128(-1 - i128::from(value))
+                } else {
+                    ParsedValue::I64(-1 - value as i64)
                 }
-                visitor.visit_i64(-1 - value as i64)
             }
-            0x3c..=0x3f => Err(self.error(ErrorCode::UnassignedCode)),
-
-            // Major type 2: a byte string
-            0x40..=0x57 => self.parse_bytes(byte as usize - 0x40, visitor),
-            0x58 => {
-                let len = self.parse_u8()?;
-                self.parse_bytes(len as usize, visitor)
-            }
-            0x59 => {
-                let len = self.parse_u16()?;
-                self.parse_bytes(len as usize, visitor)
-            }
-            0x5a => {
-                let len = self.parse_u32()?;
-                self.parse_bytes(len as usize, visitor)
-            }
-            0x5b => {
-                let len = self.parse_u64()?;
-                if len > usize::max_value() as u64 {
-                    return Err(self.error(ErrorCode::LengthOutOfRange));
-                }
-                self.parse_bytes(len as usize, visitor)
-            }
-            0x5c..=0x5e => Err(self.error(ErrorCode::UnassignedCode)),
-            0x5f => self.parse_indefinite_bytes(visitor),
-
-            // Major type 3: a text string
-            0x60..=0x77 => self.parse_str(byte as usize - 0x60, visitor),
-            0x78 => {
-                let len = self.parse_u8()?;
-                self.parse_str(len as usize, visitor)
-            }
-            0x79 => {
-                let len = self.parse_u16()?;
-                self.parse_str(len as usize, visitor)
-            }
-            0x7a => {
-                let len = self.parse_u32()?;
-                self.parse_str(len as usize, visitor)
-            }
-            0x7b => {
-                let len = self.parse_u64()?;
-                if len > usize::max_value() as u64 {
-                    return Err(self.error(ErrorCode::LengthOutOfRange));
-                }
-                self.parse_str(len as usize, visitor)
-            }
-            0x7c..=0x7e => Err(self.error(ErrorCode::UnassignedCode)),
-            0x7f => self.parse_indefinite_str(visitor),
-
-            // Major type 4: an array of data items
-            0x80..=0x97 => self.parse_array(byte as usize - 0x80, visitor),
-            0x98 => {
-                let len = self.parse_u8()?;
-                self.parse_array(len as usize, visitor)
-            }
-            0x99 => {
-                let len = self.parse_u16()?;
-                self.parse_array(len as usize, visitor)
-            }
-            0x9a => {
-                let len = self.parse_u32()?;
-                self.parse_array(len as usize, visitor)
-            }
-            0x9b => {
-                let len = self.parse_u64()?;
-                if len > usize::max_value() as u64 {
-                    return Err(self.error(ErrorCode::LengthOutOfRange));
-                }
-                self.parse_array(len as usize, visitor)
-            }
-            0x9c..=0x9e => Err(self.error(ErrorCode::UnassignedCode)),
-            0x9f => self.parse_indefinite_array(visitor),
-
-            // Major type 5: a map of pairs of data items
-            0xa0..=0xb7 => self.parse_map(byte as usize - 0xa0, visitor),
-            0xb8 => {
-                let len = self.parse_u8()?;
-                self.parse_map(len as usize, visitor)
-            }
-            0xb9 => {
-                let len = self.parse_u16()?;
-                self.parse_map(len as usize, visitor)
-            }
-            0xba => {
-                let len = self.parse_u32()?;
-                self.parse_map(len as usize, visitor)
-            }
-            0xbb => {
-                let len = self.parse_u64()?;
-                if len > usize::max_value() as u64 {
-                    return Err(self.error(ErrorCode::LengthOutOfRange));
-                }
-                self.parse_map(len as usize, visitor)
-            }
-            0xbc..=0xbe => Err(self.error(ErrorCode::UnassignedCode)),
-            0xbf => self.parse_indefinite_map(visitor),
-
-            // Major type 6: optional semantic tagging of other major types
-            0xc0..=0xd7 => {
-                let tag = u64::from(byte) - 0xc0;
-                self.handle_tagged_value(tag, visitor)
-            }
-            0xd8 => {
-                let tag = self.parse_u8()?;
-                self.handle_tagged_value(tag.into(), visitor)
-            }
-            0xd9 => {
-                let tag = self.parse_u16()?;
-                self.handle_tagged_value(tag.into(), visitor)
-            }
-            0xda => {
-                let tag = self.parse_u32()?;
-                self.handle_tagged_value(tag.into(), visitor)
-            }
-            0xdb => {
-                let tag = self.parse_u64()?;
-                self.handle_tagged_value(tag, visitor)
-            }
-            0xdc..=0xdf => Err(self.error(ErrorCode::UnassignedCode)),
 
             // Major type 7: floating-point numbers and other simple data types that need no content
-            0xe0..=0xf3 => Err(self.error(ErrorCode::UnassignedCode)),
-            0xf4 => visitor.visit_bool(false),
-            0xf5 => visitor.visit_bool(true),
-            0xf6 => visitor.visit_unit(),
-            0xf7 => visitor.visit_unit(),
-            0xf8 => Err(self.error(ErrorCode::UnassignedCode)),
+            0xf4 => ParsedValue::Bool(false),
+            0xf5 => ParsedValue::Bool(true),
+            0xf6 | 0xf7 => ParsedValue::Unit,
             0xf9 => {
                 let value = self.parse_f16()?;
-                visitor.visit_f32(value)
+                ParsedValue::F32(value)
             }
             0xfa => {
                 let value = self.parse_f32()?;
-                visitor.visit_f32(value)
+                ParsedValue::F32(value)
             }
             0xfb => {
                 let value = self.parse_f64()?;
-                visitor.visit_f64(value)
+                ParsedValue::F64(value)
             }
-            0xfc..=0xfe => Err(self.error(ErrorCode::UnassignedCode)),
-            0xff => Err(self.error(ErrorCode::UnexpectedCode)),
 
-            _ => unreachable!(),
+            byte => ParsedValue::Other { byte },
+        })
+    }
+
+    fn parse_value<V>(&mut self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let value = self.parse_primitive()?;
+        match value {
+            ParsedValue::Other { byte } => match byte {
+                // Major type 2: a byte string
+                0x40..=0x57 => self.parse_bytes(byte as usize - 0x40, visitor),
+                0x58 => {
+                    let len = self.parse_u8()?;
+                    self.parse_bytes(len as usize, visitor)
+                }
+                0x59 => {
+                    let len = self.parse_u16()?;
+                    self.parse_bytes(len as usize, visitor)
+                }
+                0x5a => {
+                    let len = self.parse_u32()?;
+                    self.parse_bytes(len as usize, visitor)
+                }
+                0x5b => {
+                    let len = self.parse_u64()?;
+                    if len > usize::max_value() as u64 {
+                        return Err(self.error(ErrorCode::LengthOutOfRange));
+                    }
+                    self.parse_bytes(len as usize, visitor)
+                }
+                0x5f => self.parse_indefinite_bytes(visitor),
+
+                // Major type 3: a text string
+                0x60..=0x77 => self.parse_str(byte as usize - 0x60, visitor),
+                0x78 => {
+                    let len = self.parse_u8()?;
+                    self.parse_str(len as usize, visitor)
+                }
+                0x79 => {
+                    let len = self.parse_u16()?;
+                    self.parse_str(len as usize, visitor)
+                }
+                0x7a => {
+                    let len = self.parse_u32()?;
+                    self.parse_str(len as usize, visitor)
+                }
+                0x7b => {
+                    let len = self.parse_u64()?;
+                    if len > usize::max_value() as u64 {
+                        return Err(self.error(ErrorCode::LengthOutOfRange));
+                    }
+                    self.parse_str(len as usize, visitor)
+                }
+                0x7f => self.parse_indefinite_str(visitor),
+
+                // Major type 4: an array of data items
+                0x80..=0x97 => self.parse_array(byte as usize - 0x80, visitor),
+                0x98 => {
+                    let len = self.parse_u8()?;
+                    self.parse_array(len as usize, visitor)
+                }
+                0x99 => {
+                    let len = self.parse_u16()?;
+                    self.parse_array(len as usize, visitor)
+                }
+                0x9a => {
+                    let len = self.parse_u32()?;
+                    self.parse_array(len as usize, visitor)
+                }
+                0x9b => {
+                    let len = self.parse_u64()?;
+                    if len > usize::max_value() as u64 {
+                        return Err(self.error(ErrorCode::LengthOutOfRange));
+                    }
+                    self.parse_array(len as usize, visitor)
+                }
+                0x9f => self.parse_indefinite_array(visitor),
+
+                // Major type 5: a map of pairs of data items
+                0xa0..=0xb7 => self.parse_map(byte as usize - 0xa0, visitor),
+                0xb8 => {
+                    let len = self.parse_u8()?;
+                    self.parse_map(len as usize, visitor)
+                }
+                0xb9 => {
+                    let len = self.parse_u16()?;
+                    self.parse_map(len as usize, visitor)
+                }
+                0xba => {
+                    let len = self.parse_u32()?;
+                    self.parse_map(len as usize, visitor)
+                }
+                0xbb => {
+                    let len = self.parse_u64()?;
+                    if len > usize::max_value() as u64 {
+                        return Err(self.error(ErrorCode::LengthOutOfRange));
+                    }
+                    self.parse_map(len as usize, visitor)
+                }
+                0xbf => self.parse_indefinite_map(visitor),
+
+                // Major type 6: optional semantic tagging of other major types
+                0xc0..=0xd7 => {
+                    let tag = u64::from(byte) - 0xc0;
+                    self.handle_tagged_value(tag, visitor)
+                }
+                0xd8 => {
+                    let tag = self.parse_u8()?;
+                    self.handle_tagged_value(tag.into(), visitor)
+                }
+                0xd9 => {
+                    let tag = self.parse_u16()?;
+                    self.handle_tagged_value(tag.into(), visitor)
+                }
+                0xda => {
+                    let tag = self.parse_u32()?;
+                    self.handle_tagged_value(tag.into(), visitor)
+                }
+                0xdb => {
+                    let tag = self.parse_u64()?;
+                    self.handle_tagged_value(tag, visitor)
+                }
+
+                _ => Err(self.error(ErrorCode::UnassignedCode)),
+            },
+            value => value.visit(visitor),
+        }
+    }
+}
+
+enum ParsedValue {
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    I128(i128),
+    Bool(bool),
+    Unit,
+    F32(f32),
+    F64(f64),
+
+    Other { byte: u8 },
+}
+
+impl ParsedValue {
+    fn visit<'de, V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self {
+            Self::U8(v) => visitor.visit_u8(v),
+            Self::U16(v) => visitor.visit_u16(v),
+            Self::U32(v) => visitor.visit_u32(v),
+            Self::U64(v) => visitor.visit_u64(v),
+            Self::I8(v) => visitor.visit_i8(v),
+            Self::I16(v) => visitor.visit_i16(v),
+            Self::I32(v) => visitor.visit_i32(v),
+            Self::I64(v) => visitor.visit_i64(v),
+            Self::I128(v) => visitor.visit_i128(v),
+            Self::Bool(v) => visitor.visit_bool(v),
+            Self::Unit => visitor.visit_unit(),
+            Self::F32(v) => visitor.visit_f32(v),
+            Self::F64(v) => visitor.visit_f64(v),
+
+            Self::Other { .. } => panic!("self must not be Self::Other"),
         }
     }
 }
